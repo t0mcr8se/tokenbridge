@@ -1,26 +1,36 @@
 import { Contract } from 'web3-eth-contract'
 import { EventData } from 'web3-eth-contract'
 import { SnapshotProvider } from '../services/SnapshotProvider'
-import { getEvents } from './events'
+import { getLogs } from './explorer'
+import Web3 from 'web3'
+
+const getPastEventsWithFallback = (
+  api: string,
+  web3: Web3 | null,
+  contract: Contract,
+  eventName: string,
+  options: any
+) =>
+  contract
+    .getPastEvents(eventName, options)
+    .catch(() => (api && web3 ? getLogs(api, web3, contract, eventName, options) : []))
 
 export const getRequiredBlockConfirmations = async (
   contract: Contract,
   blockNumber: number,
-  isHome: boolean,
-  snapshotProvider: SnapshotProvider
+  snapshotProvider: SnapshotProvider,
+  web3: Web3 | null = null,
+  api: string = ''
 ) => {
   const eventsFromSnapshot = snapshotProvider.requiredBlockConfirmationEvents(blockNumber)
   const snapshotBlockNumber = snapshotProvider.snapshotBlockNumber()
 
-  let contractEvents: any = []
+  let contractEvents: EventData[] = []
   if (blockNumber > snapshotBlockNumber) {
-    contractEvents = await getEvents(
-      contract,
-      'RequiredBlockConfirmationChanged',
-      snapshotBlockNumber + 1,
-      isHome,
-      blockNumber
-    )
+    contractEvents = await getPastEventsWithFallback(api, web3, contract, 'RequiredBlockConfirmationChanged', {
+      fromBlock: snapshotBlockNumber + 1,
+      toBlock: blockNumber
+    })
   }
 
   const events = [...eventsFromSnapshot, ...contractEvents]
@@ -43,21 +53,19 @@ export const getValidatorAddress = (contract: Contract) => contract.methods.vali
 export const getRequiredSignatures = async (
   contract: Contract,
   blockNumber: number,
-  isHome: boolean,
-  snapshotProvider: SnapshotProvider
+  snapshotProvider: SnapshotProvider,
+  web3: Web3 | null = null,
+  api: string = ''
 ) => {
   const eventsFromSnapshot = snapshotProvider.requiredSignaturesEvents(blockNumber)
   const snapshotBlockNumber = snapshotProvider.snapshotBlockNumber()
 
-  let contractEvents: any = []
+  let contractEvents: EventData[] = []
   if (blockNumber > snapshotBlockNumber) {
-    contractEvents = await getEvents(
-      contract,
-      'RequiredSignaturesChanged',
-      snapshotBlockNumber + 1,
-      isHome,
-      blockNumber
-    )
+    contractEvents = await getPastEventsWithFallback(api, web3, contract, 'RequiredSignaturesChanged', {
+      fromBlock: snapshotBlockNumber + 1,
+      toBlock: blockNumber
+    })
   }
 
   const events = [...eventsFromSnapshot, ...contractEvents]
@@ -71,10 +79,43 @@ export const getRequiredSignatures = async (
 export const getValidatorList = async (
   contract: Contract,
   blockNumber: number,
-  isHome: boolean,
-  snapshotProvider: SnapshotProvider
+  snapshotProvider: SnapshotProvider,
+  web3: Web3 | null = null,
+  api: string = ''
 ) => {
-  return await contract.methods.validatorList().call()
+  const addedEventsFromSnapshot = snapshotProvider.validatorAddedEvents(blockNumber)
+  const removedEventsFromSnapshot = snapshotProvider.validatorRemovedEvents(blockNumber)
+  const snapshotBlockNumber = snapshotProvider.snapshotBlockNumber()
+
+  const fromBlock = snapshotBlockNumber > blockNumber ? snapshotBlockNumber + 1 : blockNumber
+  const [currentList, added, removed] = await Promise.all([
+    contract.methods.validatorList().call(),
+    getPastEventsWithFallback(api, web3, contract, 'ValidatorAdded', {
+      fromBlock
+    }),
+    getPastEventsWithFallback(api, web3, contract, 'ValidatorRemoved', {
+      fromBlock
+    })
+  ])
+
+  // Ordered desc
+  const orderedEvents = [...addedEventsFromSnapshot, ...added, ...removedEventsFromSnapshot, ...removed].sort(
+    ({ blockNumber: prev }, { blockNumber: next }) => next - prev
+  )
+
+  // Stored as a Set to avoid duplicates
+  const validatorList = new Set(currentList)
+
+  orderedEvents.forEach(e => {
+    const { validator } = e.returnValues
+    if (e.event === 'ValidatorRemoved') {
+      validatorList.add(validator)
+    } else if (e.event === 'ValidatorAdded') {
+      validatorList.delete(validator)
+    }
+  })
+
+  return Array.from(validatorList)
 }
 
 export const getMessagesSigned = (contract: Contract, hash: string) => contract.methods.messagesSigned(hash).call()

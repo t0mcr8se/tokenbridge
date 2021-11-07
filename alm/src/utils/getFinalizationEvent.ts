@@ -1,57 +1,97 @@
 import { Contract, EventData } from 'web3-eth-contract'
 import Web3 from 'web3'
-import { CACHE_KEY_EXECUTION_FAILED, THREE_DAYS_TIMESTAMP, VALIDATOR_CONFIRMATION_STATUS } from '../config/constants'
+import {
+  CACHE_KEY_EXECUTION_FAILED,
+  FOREIGN_EXPLORER_API,
+  FOREIGN_RPC_POLLING_INTERVAL,
+  HOME_EXPLORER_API,
+  HOME_RPC_POLLING_INTERVAL,
+  VALIDATOR_CONFIRMATION_STATUS
+} from '../config/constants'
 import { ExecutionData } from '../hooks/useMessageConfirmations'
 import {
   APIPendingTransaction,
   APITransaction,
-  GetFailedTransactionParams,
-  GetPendingTransactionParams
+  GetTransactionParams,
+  GetPendingTransactionParams,
+  getLogs
 } from './explorer'
 import { getBlock, MessageObject } from './web3'
 import validatorsCache from '../services/ValidatorsCache'
-import { getEvents } from './events'
-import { usingSubgraph } from './subgraph'
+import { foreignBlockNumberProvider, homeBlockNumberProvider } from '../services/BlockNumberProvider'
+
+const getPastEventsWithFallback = (api: string, web3: Web3, contract: Contract, eventName: string, options: any) =>
+  contract.getPastEvents(eventName, options).catch(
+    () =>
+      api
+        ? getLogs(api, web3, contract, eventName, {
+            fromBlock: options.fromBlock,
+            toBlock: options.toBlock,
+            topics: [null, null, options.filter.messageId]
+          })
+        : []
+  )
+
+export const getSuccessExecutionData = async (
+  contract: Contract,
+  eventName: string,
+  web3: Web3,
+  messageId: string,
+  api: string = ''
+) => {
+  // Since it filters by the message id, only one event will be fetched
+  // so there is no need to limit the range of the block to reduce the network traffic
+  const events: EventData[] = await getPastEventsWithFallback(api, web3, contract, eventName, {
+    fromBlock: 0,
+    toBlock: 'latest',
+    filter: {
+      messageId
+    }
+  })
+  if (events.length > 0) {
+    const event = events[0]
+    const [txReceipt, block] = await Promise.all([
+      web3.eth.getTransactionReceipt(event.transactionHash),
+      getBlock(web3, event.blockNumber)
+    ])
+
+    const blockTimestamp = typeof block.timestamp === 'string' ? parseInt(block.timestamp) : block.timestamp
+    const validatorAddress = web3.utils.toChecksumAddress(txReceipt.from)
+
+    return {
+      status: VALIDATOR_CONFIRMATION_STATUS.SUCCESS,
+      validator: validatorAddress,
+      txHash: event.transactionHash,
+      timestamp: blockTimestamp,
+      executionResult: event.returnValues.status
+    }
+  }
+  return null
+}
 
 export const getFinalizationEvent = async (
-  contract: Maybe<Contract>,
-  eventName: string,
-  web3: Maybe<Web3>,
   fromHome: boolean,
+  contract: Contract,
+  web3: Web3,
   setResult: React.Dispatch<React.SetStateAction<ExecutionData>>,
-  waitingBlocksResolved: boolean,
   message: MessageObject,
-  interval: number,
-  subscriptions: number[],
-  timestamp: number,
+  setTimeoutId: (timeoutId: number) => void,
+  isCancelled: () => boolean,
+  startBlock: number,
   collectedSignaturesEvent: Maybe<EventData>,
-  getFailedExecution: (args: GetFailedTransactionParams) => Promise<APITransaction[]>,
+  getFailedExecution: (args: GetTransactionParams) => Promise<APITransaction[]>,
   setFailedExecution: Function,
   getPendingExecution: (args: GetPendingTransactionParams) => Promise<APIPendingTransaction[]>,
   setPendingExecution: Function,
   setExecutionEventsFetched: Function
 ) => {
-  if (!contract || !web3 || !waitingBlocksResolved) return
-  // Since it filters by the message id, only one event will be fetched
-  // so there is no need to limit the range of the block to reduce the network traffic
-  const events: any = await getEvents(contract, eventName, 0, fromHome, undefined, { messageId: message.id })
-  if (events.length > 0) {
-    const event = events[0]
-    const txReceipt = await web3.eth.getTransactionReceipt(
-      usingSubgraph(fromHome) ? event.returnValues.id : event.transactionHash
-    )
-    const block = await getBlock(web3, txReceipt.blockNumber)
+  const eventName = fromHome ? 'RelayedMessage' : 'AffirmationCompleted'
+  const api = fromHome ? FOREIGN_EXPLORER_API : HOME_EXPLORER_API
 
-    const blockTimestamp = typeof block.timestamp === 'string' ? parseInt(block.timestamp) : block.timestamp
-    const validatorAddress = web3.utils.toChecksumAddress(txReceipt.from)
+  const successExecutionData = await getSuccessExecutionData(contract, eventName, web3, message.id, api)
 
-    setResult({
-      status: VALIDATOR_CONFIRMATION_STATUS.SUCCESS,
-      validator: validatorAddress,
-      txHash: usingSubgraph(fromHome) ? event.returnValues.id : event.transactionHash,
-      timestamp: blockTimestamp,
-      executionResult: event.returnValues.status
-    })
+  if (successExecutionData) {
+    setResult(successExecutionData)
   } else {
     setExecutionEventsFetched(true)
     // If event is defined, it means it is a message from Home to Foreign
@@ -81,14 +121,15 @@ export const getFinalizationEvent = async (
       } else {
         const validatorExecutionCacheKey = `${CACHE_KEY_EXECUTION_FAILED}${validator}-${message.id}`
         const failedFromCache = validatorsCache.get(validatorExecutionCacheKey)
+        const blockProvider = fromHome ? foreignBlockNumberProvider : homeBlockNumberProvider
 
         if (!failedFromCache) {
           const failedTransactions = await getFailedExecution({
             account: validator,
             to: contract.options.address,
             messageData: message.data,
-            startTimestamp: timestamp,
-            endTimestamp: timestamp + THREE_DAYS_TIMESTAMP
+            startBlock,
+            endBlock: blockProvider.get() || 0
           })
 
           if (failedTransactions.length > 0) {
@@ -111,28 +152,28 @@ export const getFinalizationEvent = async (
       }
     }
 
-    const timeoutId = setTimeout(
-      () =>
-        getFinalizationEvent(
-          contract,
-          eventName,
-          web3,
-          fromHome,
-          setResult,
-          waitingBlocksResolved,
-          message,
-          interval,
-          subscriptions,
-          timestamp,
-          collectedSignaturesEvent,
-          getFailedExecution,
-          setFailedExecution,
-          getPendingExecution,
-          setPendingExecution,
-          setExecutionEventsFetched
-        ),
-      interval
-    )
-    subscriptions.push(timeoutId)
+    if (!isCancelled()) {
+      const timeoutId = setTimeout(
+        () =>
+          getFinalizationEvent(
+            fromHome,
+            contract,
+            web3,
+            setResult,
+            message,
+            setTimeoutId,
+            isCancelled,
+            startBlock,
+            collectedSignaturesEvent,
+            getFailedExecution,
+            setFailedExecution,
+            getPendingExecution,
+            setPendingExecution,
+            setExecutionEventsFetched
+          ),
+        fromHome ? FOREIGN_RPC_POLLING_INTERVAL : HOME_RPC_POLLING_INTERVAL
+      )
+      setTimeoutId(timeoutId)
+    }
   }
 }

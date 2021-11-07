@@ -1,9 +1,6 @@
 export const HOME_BRIDGE_ADDRESS: string = process.env.REACT_APP_COMMON_HOME_BRIDGE_ADDRESS || ''
 export const FOREIGN_BRIDGE_ADDRESS: string = process.env.REACT_APP_COMMON_FOREIGN_BRIDGE_ADDRESS || ''
 
-export const HOME_SUBGRAPH_URL: string = process.env.REACT_APP_HOME_SUBGRAPH_URL || ''
-export const FOREIGN_SUBGRAPH_URL: string = process.env.REACT_APP_FOREIGN_SUBGRAPH_URL || ''
-
 export const HOME_RPC_URL: string = process.env.REACT_APP_COMMON_HOME_RPC_URL || ''
 export const FOREIGN_RPC_URL: string = process.env.REACT_APP_COMMON_FOREIGN_RPC_URL || ''
 
@@ -21,9 +18,8 @@ export const ALM_HOME_TO_FOREIGN_MANUAL_EXECUTION: boolean =
 
 export const HOME_RPC_POLLING_INTERVAL: number = 5000
 export const FOREIGN_RPC_POLLING_INTERVAL: number = 5000
-export const BLOCK_RANGE: number = 50
-export const ONE_DAY_TIMESTAMP: number = 86400
-export const THREE_DAYS_TIMESTAMP: number = 259200
+export const BLOCK_RANGE: number = 500
+export const MAX_TX_SEARCH_BLOCK_RANGE: number = 10000
 
 export const EXECUTE_AFFIRMATION_HASH = 'e7a2c01f'
 export const SUBMIT_SIGNATURE_HASH = '630cea8e'
@@ -70,27 +66,11 @@ export const SEARCHING_TX = 'Searching Transaction...'
 
 export const INCORRECT_CHAIN_ERROR = `Incorrect chain chosen. Switch to ${FOREIGN_NETWORK_NAME} in the wallet.`
 
-// Fields of the events in the subgraph
-export const SUBGRAPH_EVENT_FIELDS: { [key: string]: string[] } = {
-  userRequestForAffirmations: ['id', 'messageId', 'encodedData'],
-  userRequestForSignatures: ['id', 'messageId', 'encodedData'],
-  relayedMessages: ['id', 'sender', 'executor', 'messageId', 'status'],
-  affirmationCompleteds: ['id', 'sender', 'executor', 'messageId', 'status'],
-  collectedSignatures: ['id', 'authorityResponsibleForRelay', 'messageHash', 'numberOfCollectedSignatures'],
-  validatorAddeds: ['id', 'validator'],
-  validatorRemoveds: ['id', 'validator'],
-  requiredSignaturesChangeds: ['id', 'requiredSignatures'],
-  requiredBlockConfirmationChangeds: ['id', 'requiredBlockConfirmations']
-}
+export const DOUBLE_EXECUTION_ATTEMPT_ERROR = `Your execution transaction has been reverted.
+However, the execution completed successfully in the transaction sent by a different party.`
 
-export const EVENT_QUERIES: { [key: string]: string } = {
-  UserRequestForAffirmation: 'userRequestForAffirmations',
-  UserRequestForSignature: 'userRequestForSignature',
-  RelayedMessage: 'relayedMessages',
-  AffirmationCompleted: 'affirmationCompleteds',
-  CollectedSignatures: 'collectedSignatures',
-  ValidatorAdded: 'validatorAddeds',
-  ValidatorRemoved: 'validatorRemoveds',
-  RequiredSignaturesChanged: 'requiredSignaturesChangeds',
-  RequiredBlockConfirmationChanged: 'requiredBlockConfirmationChangeds'
-}
+export const EXECUTION_FAILED_ERROR = `Your execution transaction has been reverted.
+Please, contact the support by messaging on %linkhttps://forum.poa.network/c/support`
+
+export const EXECUTION_OUT_OF_GAS_ERROR = `Your execution transaction has been reverted due to Out-of-Gas error.
+Please, resend the transaction and provide more gas to it.`
